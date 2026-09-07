@@ -1,0 +1,154 @@
+const express = require('express');
+const mongoose = require('mongoose');
+const cors = require('cors');
+
+const app = express();
+
+// إعدادات الوسائط (Middlewares)
+app.use(express.json({ limit: '10mb' })); // لدعم صور الإيصالات والبروفايل
+app.use(cors());
+
+// 1. الاتصال بقاعدة البيانات (استبدل الرابط برابط MongoDB الخاص بك)
+const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/trading_platform';
+mongoose.connect(MONGO_URI)
+    .then(() => console.log('تم الاتصال بقاعدة البيانات بنجاح'))
+    .catch(err => console.error('خطأ في الاتصال بقاعدة البيانات:', err));
+
+// 2. تصميم الهيكل (Schemas)
+const userSchema = new mongoose.Schema({
+    name: { type: String, required: true },
+    email: { type: String, required: true, unique: true },
+    password: { type: String, required: true },
+    avatar: { type: String, default: null },
+    balance: { type: Number, default: 0.00 }
+});
+
+const depositRequestSchema = new mongoose.Schema({
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    userName: String,
+    userEmail: String,
+    amount: Number,
+    receiptImage: String,
+    status: { type: String, default: 'قيد الانتظار' },
+    createdAt: { type: Date, default: Date.now }
+});
+
+const User = mongoose.model('User', userSchema);
+const DepositRequest = mongoose.model('DepositRequest', depositRequestSchema);
+
+// ==================== 3. المسارات (API Routes) ====================
+
+// [إنشاء حساب جديد]
+app.post('/api/register', async (req, res) => {
+    try {
+        const { name, email, password } = req.body;
+
+        if (!email.endsWith('@gmail.com')) {
+            return res.status(400).json({ message: 'يجب استخدام بريد ينتهي بـ @gmail.com' });
+        }
+
+        const existingUser = await User.findOne({ email });
+        if (existingUser) {
+            return res.status(400).json({ message: 'البريد الإلكتروني مسجل مسبقاً' });
+        }
+
+        const newUser = new User({ name, email, password });
+        await newUser.save();
+
+        res.status(201).json({ success: true, message: 'تم إنشاء الحساب بنجاح' });
+    } catch (err) {
+        res.status(500).json({ message: 'حدث خطأ في الخادم' });
+    }
+});
+
+// [تسجيل الدخول]
+app.post('/api/login', async (req, res) => {
+    try {
+        const { email, password } = req.body;
+        const user = await User.findOne({ email, password });
+
+        if (!user) {
+            return res.status(400).json({ message: 'البيانات غير صحيحة أو الحساب غير موجود' });
+        }
+
+        res.json({
+            success: true,
+            user: {
+                id: user._id,
+                name: user.name,
+                email: user.email,
+                avatar: user.avatar,
+                balance: user.balance
+            }
+        });
+    } catch (err) {
+        res.status(500).json({ message: 'حدث خطأ في الخادم' });
+    }
+});
+
+// [تحديث صورة البروفايل]
+app.post('/api/user/update-avatar', async (req, res) => {
+    try {
+        const { userId, avatar } = req.body;
+        await User.findByIdAndUpdate(userId, { avatar });
+        res.json({ success: true, message: 'تم تحديث الصورة' });
+    } catch (err) {
+        res.status(500).json({ message: 'فشل تحديث الصورة' });
+    }
+});
+
+// [تقديم طلب شحن]
+app.post('/api/deposit/request', async (req, res) => {
+    try {
+        const { userId, userName, userEmail, amount, receiptImage } = req.body;
+
+        const newRequest = new DepositRequest({
+            userId,
+            userName,
+            userEmail,
+            amount: parseFloat(amount),
+            receiptImage
+        });
+
+        await newRequest.save();
+        res.json({ success: true, message: 'تم تسجيل طلب الشحن' });
+    } catch (err) {
+        res.status(500).json({ message: 'فشل تسجيل الطلب' });
+    }
+});
+
+// ==================== 4. مسارات الأدمن (Admin Routes) ====================
+
+// [جلب كافة الحسابات والطلبات للأدمن]
+app.get('/api/admin/dashboard-data', async (req, res) => {
+    try {
+        const users = await User.find({}, '-password');
+        const requests = await DepositRequest.find().sort({ createdAt: -1 });
+        res.json({ users, requests });
+    } catch (err) {
+        res.status(500).json({ message: 'فشل جلب بيانات اللوحة' });
+    }
+});
+
+// [تعديل/إضافة رصيد مستخدم من قبل الأدمن]
+app.post('/api/admin/update-balance', async (req, res) => {
+    try {
+        const { userId, amountToAdd } = req.body;
+        const user = await User.findById(userId);
+
+        if (!user) return res.status(404).json({ message: 'المستخدم غير موجود' });
+
+        user.balance += parseFloat(amountToAdd);
+        await user.save();
+
+        res.json({ success: true, newBalance: user.balance });
+    } catch (err) {
+        res.status(500).json({ message: 'فشل تحديث الرصيد' });
+    }
+});
+
+// تشغيل السيرفر
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+    console.log(`السيرفر يعمل على المنفذ: ${PORT}`);
+});
